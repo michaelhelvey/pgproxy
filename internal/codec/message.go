@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"unicode"
 )
 
 type MessageParserState uint8
@@ -34,13 +35,9 @@ type MessageType byte
 const MessageDataStartIndex = 5
 
 const (
-	ParserStateStartup MessageParserState = iota
-	ParserStateRest
-)
-
-const (
 	MessageTypeStartup         MessageType = '\x00'
 	MessageTypeSSLRequest                  = '\x01'
+	MessageTypeGSSENCRequest               = '\x02'
 	MessageTypeAuthentication              = 'R'
 	MessageTypeParameterStatus             = 'S'
 	MessageTypeQuery                       = 'Q'
@@ -63,10 +60,6 @@ func (m MessageType) String() string {
 	default:
 		return "MessageType(" + string(m) + ")"
 	}
-}
-
-type MessageParser struct {
-	state MessageParserState
 }
 
 type Message struct {
@@ -94,78 +87,84 @@ func (m *Message) ParseAsQuery() MessageQueryParsed {
 	}
 }
 
-func (m *MessageParser) ReadMessage(reader *bufio.Reader) (*Message, error) {
+func ReadMessage(reader *bufio.Reader) (*Message, error) {
 	var message Message
 	var err error
 
-	switch m.state {
-	case ParserStateStartup:
-		{
-			// FIXME: if the client wants to use SSL, then it might start with an SSL request rather
-			// than a startup request, but we're just going to pretend that's impossible for now
-			message.Type = MessageTypeStartup
-			// first 4 bytes are the length of message (including self)
-			lengthBytes := make([]byte, 4)
-			_, err = io.ReadFull(reader, lengthBytes)
-			if err != nil {
-				return nil, fmt.Errorf("could not read length bytes: %w", err)
-			}
+	firstByte, err := reader.ReadByte()
+	if err != nil {
+		return nil, err
+	}
 
-			messageLen := binary.BigEndian.Uint32(lengthBytes)
-			message.Length = messageLen
+	// I have NO idea if this is the right way to do this, it feels so hacky to me, but I'm not
+	// sure how else to differentiate between typeless and typed packets.  I thought about having
+	// something like a "parser state" (since startup messages will only come at the start of the
+	// connection, but that doesn't work since the client can ask for an SSL connection AFTER the
+	// startup packet in theory.  So for now I'm just exploiting the fact that all typed packets
+	// start with bytes in the letter range, and typeless ones start with big endian lengths, so the
+	// first byte will not typically be in that range.  Perhaps you could craft a really silly
+	// startup message that has just the right length to break this?
+	if unicode.IsLetter(rune(firstByte)) {
+		// we have a regular message containing the message type in the startup byte
+		message.Type = MessageType(firstByte)
+		messageLen, err := readMessageLength(reader)
+		if err != nil {
+			return nil, fmt.Errorf("could not read length bytes: %w", err)
+		}
 
-			// It's an SSL request...this feels hacky but I'm not sure how else to do it
-			if message.Length == 8 {
+		message.Length = messageLen
+		message.Data = make([]byte, messageLen+1) // +1 for the type byte
+
+		message.Data[0] = firstByte
+		binary.BigEndian.PutUint32(message.Data[1:5], messageLen)
+		_, err = io.ReadFull(reader, message.Data[5:])
+		if err != nil {
+			return nil, fmt.Errorf("could not read message: %w", err)
+		}
+
+		return &message, nil
+	} else {
+		// we have one of the weird "no-type-byte" message types like a StartupMessage or an
+		// encryption request
+		lengthBytes := make([]byte, 4)
+		lengthBytes[0] = firstByte
+		_, err = io.ReadFull(reader, lengthBytes[1:])
+		if err != nil {
+			return nil, err
+		}
+
+		messageLen := binary.BigEndian.Uint32(lengthBytes)
+		message.Length = messageLen
+
+		message.Data = make([]byte, messageLen)
+		copy(message.Data, lengthBytes)
+
+		_, err := io.ReadFull(reader, message.Data[4:])
+		if err != nil {
+			return nil, fmt.Errorf("could not read message: %w", err)
+		}
+
+		// now we need to figure out the type:
+		if message.Length == 8 {
+			// it's an encryption request
+			encryptionCode := binary.BigEndian.Uint32(message.Data[4:])
+			if encryptionCode == 80877104 {
+				message.Type = MessageTypeGSSENCRequest
+			} else if encryptionCode == 80877103 {
 				message.Type = MessageTypeSSLRequest
 			} else {
-				message.Type = MessageTypeStartup
-				m.state = ParserStateRest
+				return nil, fmt.Errorf("unknown encryption code %d", encryptionCode)
 			}
-
-			// question: I'm not sure if using `make` here (and following) is really the best way to
-			// do things, or if I'm supposed to be just creating an array...it seems like with the
-			// gc it shouldn't really matter a lot?
-			message.Data = make([]byte, messageLen)
-			copy(message.Data, lengthBytes)
-
-			_, err := io.ReadFull(reader, message.Data[4:])
-			if err != nil {
-				return nil, fmt.Errorf("could not read message: %w", err)
-			}
-
-			return &message, nil
+		} else {
+			// it's a startup message
+			message.Type = MessageTypeStartup
 		}
-	case ParserStateRest:
-		{
-			typeByte, err := reader.ReadByte()
-			if err != nil {
-				return nil, err
-			}
 
-			message.Type = MessageType(typeByte)
-			messageLen, err := m.readMessageLength(reader)
-			if err != nil {
-				return nil, fmt.Errorf("could not read length bytes: %w", err)
-			}
-
-			message.Length = messageLen
-			message.Data = make([]byte, messageLen+1) // +1 for the type byte
-
-			message.Data[0] = typeByte
-			binary.BigEndian.PutUint32(message.Data[1:5], messageLen)
-			_, err = io.ReadFull(reader, message.Data[5:])
-			if err != nil {
-				return nil, fmt.Errorf("could not read message: %w", err)
-			}
-
-			return &message, nil
-		}
-	default:
-		return nil, fmt.Errorf("ReadMessage: invalid state %d", m.state)
+		return &message, nil
 	}
 }
 
-func (m *MessageParser) readMessageLength(reader *bufio.Reader) (uint32, error) {
+func readMessageLength(reader *bufio.Reader) (uint32, error) {
 	lengthBytes := make([]byte, 4)
 	_, err := io.ReadFull(reader, lengthBytes)
 	if err != nil {

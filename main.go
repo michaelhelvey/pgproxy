@@ -96,11 +96,10 @@ func handleMessage(conn net.Conn, message *codec.Message) (bool, error) {
 func handleClient(conn net.Conn) {
 	addr := conn.RemoteAddr().String()
 	slog.Info("handling new client connection", "addr", addr)
-	var parser codec.MessageParser
 	reader := bufio.NewReader(conn)
 
 	for {
-		message, err := parser.ReadMessage(reader)
+		message, err := codec.ReadMessage(reader)
 		if err != nil {
 			slog.Error("could not parse message from client", "error", err)
 			conn.Close()
