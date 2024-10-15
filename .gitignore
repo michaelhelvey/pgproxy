@@ -1,0 +1,7 @@
+# go artfifacts
+pgproxy
+
+# unit tests
+.ruff_cache
+__pycache__
+venv
