@@ -1,0 +1,22 @@
+[
+  {
+    "name": "localhost - pgproxy test",
+    "match": {
+      "database": "foo"
+    },
+    "provider": "static",
+    "provider_meta": {
+      "url": "postgres://postgres:1234@localhost:5432?database=postgres&sslmode=disable"
+    }
+  },
+  {
+    "name": "localhost - test 2",
+    "match": {
+      "database": "bar"
+    },
+    "provider": "static",
+    "provider_meta": {
+      "url": "postgres://postgres:1234@localhost:5432?database=xyz&sslmode=disable"
+    }
+  }
+]

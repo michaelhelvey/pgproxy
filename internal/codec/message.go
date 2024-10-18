@@ -43,12 +43,15 @@ const (
 	MessageTypeQuery                       = 'Q'
 	MessageTypeReadyForQuery               = 'Z'
 	MessageTypeTerminate                   = 'X'
+	MessageTypeNotice                      = 'N'
 )
 
 func (m MessageType) String() string {
 	switch m {
 	case MessageTypeStartup:
 		return "Startup(0)"
+	case MessageTypeSSLRequest:
+		return "SSLRequest(1)"
 	case MessageTypeAuthentication:
 		return "Authentication(R)"
 	case MessageTypeParameterStatus:
@@ -57,6 +60,10 @@ func (m MessageType) String() string {
 		return "Query(Q)"
 	case MessageTypeReadyForQuery:
 		return "ReadyForQuery(Z)"
+	case MessageTypeTerminate:
+		return "Terminate(X)"
+	case MessageTypeNotice:
+		return "MessageTypeNotice(N)"
 	default:
 		return "MessageType(" + string(m) + ")"
 	}
@@ -73,6 +80,13 @@ type MessageQueryParsed struct {
 	QueryString string
 }
 
+type ConnectionParams map[string]string
+
+type StartupMessageParsed struct {
+	// TODO: parse other things like protocol
+	Params ConnectionParams
+}
+
 // -------------------------------------------------------------------------------------------------
 // Client message parsing
 // -------------------------------------------------------------------------------------------------
@@ -85,6 +99,37 @@ func (m *Message) ParseAsQuery() MessageQueryParsed {
 	return MessageQueryParsed{
 		QueryString: string(m.Data[MessageDataStartIndex:m.Length]),
 	}
+}
+
+func (m *Message) ParseStartupParameters() (StartupMessageParsed, error) {
+	// parameters start after 4 bytes of packet length + 4 bytes of protocol version
+	ps := m.Data[8:]
+
+	var parsed StartupMessageParsed
+	parsed.Params = make(map[string]string)
+
+	j := 0
+	key := ""
+	value := ""
+	state := 0 // 0 = parsing key, 1 = parsing value
+	for i, c := range ps {
+		if c == 0 {
+			str := string(ps[j:i])
+
+			if state == 0 {
+				key = str
+				state++
+			} else {
+				value = str
+				parsed.Params[key] = value
+				state--
+			}
+
+			j = i + 1
+		}
+	}
+
+	return parsed, nil
 }
 
 func ReadMessage(reader *bufio.Reader) (*Message, error) {
@@ -233,6 +278,22 @@ func NewParameterStatus(key string, value string) Message {
 
 	return Message{
 		Type:   MessageTypeParameterStatus,
+		Length: packetLen,
+		Data:   buf,
+	}
+}
+
+func NewNotice(msg string) Message {
+	buf := make([]byte, 0, MessageDataStartIndex+len(msg)+3)
+	packetLen := uint32(cap(buf) - 1)
+	buf = append(buf, MessageTypeNotice)
+	buf = binary.BigEndian.AppendUint32(buf, packetLen)
+	buf = append(buf, 'M') // human readable message
+	buf = append(buf, cString(msg)...)
+	buf = append(buf, 0) // expects multiple null terminators
+
+	return Message{
+		Type:   MessageTypeNotice,
 		Length: packetLen,
 		Data:   buf,
 	}

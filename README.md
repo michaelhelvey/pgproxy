@@ -32,6 +32,12 @@ go run . --log-level=DEBUG
 
 ## TODO
 
-- [ ] Implement enough of the postgres wire protocol (`MarshalBinary() -> []byte`,
+- [x] Implement enough of the postgres wire protocol (`MarshalBinary() -> []byte`,
       `ReadMessage(*bufio.Reader)`) (https://www.postgresql.org/docs/current/protocol.html) to login
       and make simple select queries without SSL
+
+- [ ] Install some kind of postgres client library that allows me to authenticate with a remote
+      server and access the underlying net.Conn of that connection.
+
+- [ ] Demonstrate a multi-database configuration that proxies different databases to different ports
+      locally
